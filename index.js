@@ -1,6 +1,6 @@
 let PEngine = window.PEngine = {};
 
-PEngine.PScene = class PScene {
+PEngine.Scene = class Scene {
   constructor(element) {
     this.canvas = element;
     this.world = null;
@@ -20,7 +20,7 @@ PEngine.PScene = class PScene {
       let looper = () => {
         try {
           if (this.looping) {
-            PEngine.PScene.draw(this);
+            PEngine.Scene.draw(this);
             window.requestAnimationFrame(looper);
           }
         }
@@ -70,9 +70,9 @@ PEngine.PScene = class PScene {
       );
     }
   }
-}
+} // ^ Scene
 
-PEngine.PWorld = class PWorld {
+PEngine.World = class World {
   static getDefaultSettings() {
     return {
       background: "rgba(21, 16, 18, 0.7)",
@@ -88,7 +88,7 @@ PEngine.PWorld = class PWorld {
   }
 
   constructor(settings = {}) {
-    this.settings = Object.assign(PWorld.getDefaultSettings(), settings);
+    this.settings = Object.assign(PEngine.World.getDefaultSettings(), settings);
     this.tileset = null;
     this.blockset = null;
     this.levels = [{blocks: [], entities: []}];
@@ -111,7 +111,7 @@ PEngine.PWorld = class PWorld {
     return this;
   }
 
-  addBlock(block, x, y, data) {
+  addBlock(block, x, y, data = {}) {
     x = ~~x;
     y = ~~y;
     if (!this.levels[this.level].blocks[x]) this.levels[this.level].blocks[x] = [];
@@ -165,7 +165,7 @@ PEngine.PWorld = class PWorld {
         stack.forEach(({block, data}) => {
           if (this.blockset && typeof block === "string") block = this.blockset.get(block);
           //console.log(block);
-          toDraw.push([block, block.layer || 0, {data, x, y}]);
+          toDraw.push([block, data.layer || 0, {data, x, y}]);
         }
       )));
     }
@@ -180,7 +180,7 @@ PEngine.PWorld = class PWorld {
         ...additional
       });
     });
-  }
+  } // ^ World.draw
 
   coords(x, y, width, height, kind) {
     if (
@@ -206,16 +206,16 @@ PEngine.PWorld = class PWorld {
       left: this.getBlock(x-1, y, layer),
       right: this.getBlock(x+1, y, layer),
       bottom: this.getBlock(x, y+1, layer),
-      above: this.getBlockStack(x, y).filter(({data}) => (data.layer || 0) > z),
-      below: this.getBlockStack(x, y).filter(({data}) => (data.layer || 0) < z)
+      above: this.getBlockStack(x, y).filter(({data}) => (data.layer || 0) > layer),
+      below: this.getBlockStack(x, y).filter(({data}) => (data.layer || 0) < layer)
     }
   }
-}
+} // ^ World
 
 PEngine.KIND_ENTITY = 0;
 PEngine.KIND_BLOCK = 1;
 
-PEngine.PTileset = class PTileset {
+PEngine.Tileset = class Tileset {
   constructor(settings = {}) {
     this.tiles = {};
     this.loading = {};
@@ -273,7 +273,7 @@ PEngine.PTileset = class PTileset {
       context.fillRect(x, y, width, height);
       return;
     }
-    if (!image) throw new Error("No image called " + image);
+    if (!image) throw new Error("No image called " + name);
     if (attributes.animation) { // animation
       let tileCount;
       if (attributes.anim.direction === "x") {
@@ -312,7 +312,7 @@ PEngine.PTileset = class PTileset {
           x, y, width, height
         );
       }
-    }
+    } // ^ animation handler
     else {
       context.drawImage(image,
         attributes.sx,
@@ -322,11 +322,66 @@ PEngine.PTileset = class PTileset {
         x, y, width, height
       );
     }
-  }
-}
+  } // ^ Tileset.draw
+} // ^ Tileset
 
-PEngine.PEntity = class PEntity {
+PEngine.Blockset = class Blockset {
+  constructor(settings = {}) {
+    this.blocks = {};
+    this.settings = settings;
+  }
+
+  registerBlock(name, block) {
+    this.blocks[name] = block;
+  }
+
+  get(name, n = 0) {
+    if (n > (this.settings.maxDepth || 4)) return null;
+    if (!this.blocks.hasOwnProperty(name)) {
+      return null;
+    }
+    else {
+      if (typeof this.blocks[name] === "string") {
+        return get(this.blocks[name], n+1);
+      }
+      else {
+        return this.blocks[name];
+      }
+    }
+  }
+} // ^ Blockset
+
+PEngine.Drawable = class Drawable {
+  setPreDraw(preDraw) {
+    this.preDraw = preDraw;
+  }
+  clearPreDraw() {
+    delete this.preDraw;
+  }
+  runPreDraw(options) {
+    if (this.hasOwnProperty("preDraw") && typeof this.preDraw === "function") this.preDraw(options);
+  }
+
+  setPostDraw(postDraw) {
+    this.postDraw = postDraw;
+  }
+  clearPostDraw() {
+    delete this.postDraw;
+  }
+  runPostDraw(options) {
+    if (this.hasOwnProperty("postDraw") && typeof this.postDraw === "function") this.postDraw(options);
+  }
+
+  draw(options) {
+    this.runPreDraw(options);
+    // drawing phase
+    this.runPostDraw(options);
+  }
+} // ^ Drawable
+
+PEngine.Entity = class Entity extends PEngine.Drawable {
   constructor(x, y, width, height, name, tile = name, layer = 0) {
+    super();
     this.x = x;
     this.y = y;
     this.width = width;
@@ -337,25 +392,73 @@ PEngine.PEntity = class PEntity {
   }
 
   draw(options) {
+    this.runPreDraw(options);
+
     let {world, context, tileset} = options;
     let {x, y, width, height} = world.coords(this.x, this.y, this.width, this.height, PEngine.KIND_ENTITY);
-    if ((x + width >= 0 && x <= context.width) && (y + height >= 0 && y <= context.height)) {
+    if ((x + width >= 0 && x <= context.width) || (y + height >= 0 && y <= context.height)) {
       tileset.draw(context, this.tile, x, y, width, height);
     }
+
+    this.runPostDraw(options);
   }
 }
 
-PEngine.PBlock = class PBlock {
+PEngine.Block = class Block extends PEngine.Drawable {
   constructor(name, tile = name) {
+    super();
     this.name = name;
     this.tile = tile;
   }
 
   draw(options) {
+    this.runPreDraw(options);
+
     let {world, context, tileset} = options;
     let {x, y, width, height} = world.coords(options.x, options.y, 1, 1, PEngine.KIND_BLOCK);
-    if ((x + width >= 0 && x <= context.width) && (y + height >= 0 && y <= context.height)) { // visible
+    if ((x + width >= 0 && x <= context.width) || (y + height >= 0 && y <= context.height)) { // visible
       tileset.draw(context, this.tile, x, y, width, height);
     }
+
+    this.runPostDraw(options);
   }
 }
+
+PEngine.PolyBlock = class PolyBlock extends PEngine.Block {
+  constructor(name, tiles = {default: name}) {
+    super(name, tiles["default"]);
+    this.name = name;
+    this.tiles = tiles;
+  }
+
+  draw(options) {
+    const sides = ["top", "bottom", "left", "right"];
+    const selectors = ["t", "b", "l", "r"];
+
+    this.runPreDraw(options);
+
+    let {world, context, tileset} = options;
+    let {x, y, width, height} = world.coords(options.x, options.y, 1, 1, PEngine.KIND_BLOCK);
+    if ((x + width >= 0 && x <= context.width) || (y + height >= 0 && y <= context.height)) { // visible
+      let neighbors = world.getBlockNeighbors(options.x, options.y, options.layer);
+      let drawn = false;
+      for (let tile in this.tiles["with"]) {
+        let selector = "";
+        for (let x = 0; x < 4; x++) {
+          if (neighbors[sides[x]] && neighbors[sides[x]].name === tile) {
+            selector += selectors[x];
+          }
+        }
+        if (selector !== "" && this.tiles["with"][tile][selector]) {
+          tileset.draw(context, this.tiles["with"][tile][selector], x, y, width, height);
+          drawn = true;
+          break;
+        }
+      }
+
+      if (!drawn) tileset.draw(context, this.tiles["default"], x, y, width, height);
+    }
+
+    this.runPostDraw(options);
+  }
+} // ^ PolyBlock
