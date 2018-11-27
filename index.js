@@ -2,9 +2,24 @@ let PEngine = window.PEngine = {};
 
 PEngine.Scene = class Scene {
   constructor(element) {
+    if (typeof element == "string") {
+      let temp = document.querySelector(element);
+      if (temp) {
+        element = temp;
+      }
+      else {
+        throw new Error(`PEngine.Scene::(new): no element matching ${element} found`);
+      }
+    }
+    if (!element instanceof HTMLCanvasElement) {
+      throw new Error("PEngine.Scene::(new): element is not a canvas element");
+    }
     this.canvas = element;
     this.world = null;
-    this.context = element.getContext("2d");
+    this.context = this.canvas.getContext("2d");
+    if (this.context === null) {
+      throw new Error("PEngine.Scene::(new): canvas context was already initialized in another mode or context could not be queried");
+    }
     this.updateSize();
     this.uninterpolate();
   }
@@ -40,6 +55,9 @@ PEngine.Scene = class Scene {
   }
 
   listenResize(w = window) {
+    if (!w.addEventListener) {
+      throw new Error("PEngine.Scene::listenResize: invalid element");
+    }
     w.addEventListener("resize", () => {
       this.updateSize();
       this.uninterpolate();
@@ -50,16 +68,28 @@ PEngine.Scene = class Scene {
   updateSize() {
     this.canvas.width = this.context.width = this.canvas.clientWidth;
     this.canvas.height = this.context.height = this.canvas.clientHeight;
+
+    return this;
   }
 
   uninterpolate() {
     this.context.imageSmoothingEnabled = false;
-    /*this.context.mozImageSmoothingEnabled = false;
-    this.context.webkitImageSmoothingEnabled = false;
-    this.context.msImageSmoothingEnabled = false;*/
+    return this;
+  }
+
+  interpolate() {
+    this.context.imageSmoothingEnabled = true;
+    return this;
   }
 
   static draw(scene) {
+    if (!scene.world) {
+      throw new Error("PEngine.Scene.draw: a bound World instance is required in order to draw");
+    }
+    if (!scene.world.tileset) {
+      throw new Error("PEngine.Scene.draw: a Tileset instance has to be bound to the bound World instance in order to draw");
+    }
+
     scene.context.clearRect(0, 0, scene.canvas.width, scene.canvas.height);
 
     if (scene.world) {
@@ -82,7 +112,7 @@ PEngine.World = class World {
       },
       scale: [4, 4],
       offset: [0, 0],
-      blockSize: [32, 32],
+      blockScale: [32, 32], // NOTE: blocks only represent a 1x1 tile
       entitiesUseBlockSize: false
     };
   }
@@ -91,6 +121,7 @@ PEngine.World = class World {
     this.settings = Object.assign(PEngine.World.getDefaultSettings(), settings);
     this.tileset = null;
     this.blockset = null;
+    this.entityset = null;
     this.levels = [{blocks: [], entities: []}];
     this.level = 0;
     this.state = {};
@@ -106,12 +137,45 @@ PEngine.World = class World {
     return this;
   }
 
+  bindEntityset(entityset) {
+    this.entityset = entityset;
+    return this;
+  }
+
   addEntity(entity) {
+    this._checkLevel("addEntity");
     this.levels[this.level].entities.push(entity);
     return this;
   }
 
+  getEntities(name) {
+    this._checkLevel("getEntities");
+    if (typeof name == "string") {
+      return this.levels[this.level].entities.filter((entity) => entity.name === name || (entity.getParent() || {}).name === name);
+    }
+    else {
+      return this.levels[this.level].entities;
+    }
+  }
+
+  removeEntity(n) {
+    this._checkLevel("removeEntity");
+    if (typeof n == "number") {
+      this.levels[this.level].entities.splice(n, 1);
+      return true;
+    }
+    else {
+      let index = this.levels[this.level].entities.indexOf(n);
+      if (~index) {
+        this.levels[this.level].entities.splice(index, 1);
+        return true;
+      }
+    }
+    return false;
+  }
+
   addBlock(block, x, y, data = {}) {
+    this._checkLevel("addBlock");
     x = ~~x;
     y = ~~y;
     if (!this.levels[this.level].blocks[x]) this.levels[this.level].blocks[x] = [];
@@ -121,18 +185,22 @@ PEngine.World = class World {
   }
 
   getBlockStack(x, y) {
+    this._checkLevel("getBlockStack");
     return (this.levels[this.level].blocks[x] || [])[y] || [];
   }
 
   getBlock(x, y, layer = 0) {
+    this._checkLevel("getBlock");
     return (((this.levels[this.level].blocks[x] || [])[y] || []).find(({data = {}}) => (data.layer || 0) === layer) || {block: null}).block;
   }
 
   getBlockData(x, y, layer = 0) {
+    this._checkLevel("getBlockData");
     return (((this.levels[this.level].blocks[x] || [])[y] || []).find(({data = {}}) => (data.layer || 0) === layer) || {data: null}).data;
   }
 
   getBlockRaw(x, y, layer = 0) {
+    this._checkLevel("getBlockRaw");
     return ((this.levels[this.level].blocks[x] || [])[y] || []).find(({data = {}}) => (data.layer || 0) === layer) || null;
   }
 
@@ -175,6 +243,8 @@ PEngine.World = class World {
       element.draw({
         world: this,
         tileset: this.tileset,
+        entityset: this.entityset,
+        blockset: this.blockset,
         context,
         level: this.levels[this.level],
         ...additional
@@ -187,10 +257,10 @@ PEngine.World = class World {
       kind === PEngine.KIND_ENTITY && this.settings.entitiesUseBlockSize
       || kind === PEngine.KIND_BLOCK
     ) {
-      x *= this.settings.blockSize[0];
-      y *= this.settings.blockSize[1];
-      width *= this.settings.blockSize[0];
-      height *= this.settings.blockSize[1];
+      x *= this.settings.blockScale[0];
+      y *= this.settings.blockScale[1];
+      width *= this.settings.blockScale[0];
+      height *= this.settings.blockScale[1];
     }
     return {
       x: this.settings.scale[0] * (x + this.settings.offset[0]),
@@ -210,6 +280,12 @@ PEngine.World = class World {
       below: this.getBlockStack(x, y).filter(({data}) => (data.layer || 0) < layer)
     }
   }
+
+  _checkLevel(fnname = "*") {
+    if (!this.levels[this.level] || !this.levels[this.level].blocks || !this.levels[this.level].entities) {
+      throw new Error(`PEngine.World::${fnname}: level not initialized`);
+    }
+  }
 } // ^ World
 
 PEngine.KIND_ENTITY = 0;
@@ -226,7 +302,7 @@ PEngine.Tileset = class Tileset {
   get(name, n = 0) {
     if (n > (this.settings.maxDepth || 4)) return;
     if (typeof this.tiles[name] === "string") {
-      return this.get(this.tiles[name], n+1);
+      return this.get(this.tiles[name].slice(1), n+1); // the .slice(1) is there because of the leading #
     }
     return this.tiles[name] || null;
   }
@@ -236,6 +312,11 @@ PEngine.Tileset = class Tileset {
   }
 
   registerTile(name, image, attributes = {}) {
+    if (!image.startsWith("#")) {
+      let temp = new Image();
+      temp.src = image;
+      image = temp;
+    }
     this.tiles[name] = image;
     this.setAttributes(name, attributes);
     if (image instanceof Image) {
@@ -253,7 +334,7 @@ PEngine.Tileset = class Tileset {
 
   setAttributes(name, attributes) {
     let image = this.get(name) || {naturalWidth: 0, naturalHeight: 0};
-    this.attributes[name] = Object.assign({}, attributes, {
+    this.attributes[name] = Object.assign({}, attributes, this.getAttributes(name), {
       sx: attributes.sx && ~attributes.sx ? attributes.sx : 0,
       sy: attributes.sy && ~attributes.sy ? attributes.sy : 0,
       swidth: attributes.swidth && ~attributes.swidth ? attributes.swidth : image.naturalWidth,
@@ -266,6 +347,7 @@ PEngine.Tileset = class Tileset {
   }
 
   draw(context, name, x, y, width, height) {
+    //console.log(name, this.get(name));
     let image = this.get(name);
     let attributes = this.getAttributes(name);
     if (!image && attributes.color) {
@@ -273,10 +355,10 @@ PEngine.Tileset = class Tileset {
       context.fillRect(x, y, width, height);
       return;
     }
-    if (!image) throw new Error("No image called " + name);
+    if (!image) throw new Error("PEngine.Tileset: no tile called " + name);
     if (attributes.animation) { // animation
       let tileCount;
-      if (attributes.anim.direction === "x") {
+      if (attributes.animation.direction === "x") {
         tileCount =
           typeof attributes.animation.steps === "number" && attributes.animation.steps
           || Array.isArray(attributes.animation.steps) && attributes.animation.steps.length
@@ -289,24 +371,24 @@ PEngine.Tileset = class Tileset {
           || Math.floor(image.naturalHeight / attributes.sheight);
       }
 
-      let active = Math.floor(performace.now() / attributes.animation.interval) % tileCount;
+      let active = Math.floor(performance.now() / attributes.animation.interval) % tileCount;
       if (Array.isArray(attributes.animation.steps)) {
         active = attributes.animation.steps[active];
       }
 
-      if (attributes.anim.direction === "x") {
+      if (attributes.animation.direction === "x") {
         context.drawImage(image,
-          Math.floor(attributes.sx) + attributes.swidth * active_tile,
+          Math.floor(attributes.sx) + attributes.swidth * active,
           Math.floor(attributes.sy),
           attributes.swidth,
           attributes.sheight,
           x, y, width, height
         );
       }
-      if (attributes.anim.direction === "x") {
+      if (attributes.animation.direction === "y") {
         context.drawImage(image,
           Math.floor(attributes.sx),
-          Math.floor(attributes.sy) + attributes.sheight * active_tile,
+          Math.floor(attributes.sy) + attributes.sheight * active,
           attributes.swidth,
           attributes.sheight,
           x, y, width, height
@@ -331,6 +413,13 @@ PEngine.Blockset = class Blockset {
     this.settings = settings;
   }
 
+  static from(obj) {
+    if (typeof obj === "object") {
+      this.blocks = obj.blocks;
+      this.settings = obj.settings;
+    }
+  }
+
   registerBlock(name, block) {
     this.blocks[name] = block;
   }
@@ -351,6 +440,21 @@ PEngine.Blockset = class Blockset {
   }
 } // ^ Blockset
 
+PEngine.Entityset = class Entityset {
+  constructor(settings = {}) {
+    this.settings = settings;
+    this.entities = {};
+  }
+
+  get(name) {
+    return this.entities[name];
+  }
+
+  registerEntity(name, entity) {
+    this.entities[name] = entity;
+  }
+}
+
 PEngine.Drawable = class Drawable {
   setPreDraw(preDraw) {
     this.preDraw = preDraw;
@@ -358,8 +462,8 @@ PEngine.Drawable = class Drawable {
   clearPreDraw() {
     delete this.preDraw;
   }
-  runPreDraw(options) {
-    if (this.hasOwnProperty("preDraw") && typeof this.preDraw === "function") this.preDraw(options);
+  runPreDraw(...args) {
+    if (this.hasOwnProperty("preDraw") && typeof this.preDraw === "function") this.preDraw(...args);
   }
 
   setPostDraw(postDraw) {
@@ -368,10 +472,11 @@ PEngine.Drawable = class Drawable {
   clearPostDraw() {
     delete this.postDraw;
   }
-  runPostDraw(options) {
-    if (this.hasOwnProperty("postDraw") && typeof this.postDraw === "function") this.postDraw(options);
+  runPostDraw(...args) {
+    if (this.hasOwnProperty("postDraw") && typeof this.postDraw === "function") this.postDraw(...args);
   }
 
+  // template / placeholder
   draw(options) {
     this.runPreDraw(options);
     // drawing phase
@@ -380,25 +485,60 @@ PEngine.Drawable = class Drawable {
 } // ^ Drawable
 
 PEngine.Entity = class Entity extends PEngine.Drawable {
-  constructor(x, y, width, height, name, tile = name, layer = 0) {
+  constructor(width, height, name, tiles = {default: name}) {
     super();
-    this.x = x;
-    this.y = y;
     this.width = width;
     this.height = height;
     this.name = name;
-    this.tile = tile;
+    this.tiles = tiles;
+  }
+
+  draw(options, instance) {
+    this.runPreDraw(options, instance);
+
+    let {world, context, tileset} = options;
+    let {x, y, width, height} = world.coords(instance.x, instance.y, this.width, this.height, PEngine.KIND_ENTITY);
+    //throw [x, y, width, height];
+    if ((x + width >= 0 && x <= context.width) || (y + height >= 0 && y <= context.height)) {
+      tileset.draw(context, this.tiles[instance.state] || this.tiles.default, x, y, width, height);
+    }
+
+    this.runPostDraw(options, instance);
+  }
+}
+
+PEngine.EntityInstance = class EntityInstance extends PEngine.Drawable {
+  constructor(x, y, parent, layer = 0) {
+    super();
+    this.x = x;
+    this.y = y;
     this.layer = layer;
+    this.parent = parent;
+    this.state = "default";
+  }
+
+  setState(state) {
+    this.state = state;
+  }
+
+  getParent() {
+    let parent = this.parent;
+    if (typeof parent == "string" && entityset) {
+      parent = entityset.get(parent);
+      if (!parent) {
+        throw new Error("PEngine.getParent: couldn't find Entity " + this.parent);
+      }
+    }
+    return parent;
   }
 
   draw(options) {
     this.runPreDraw(options);
 
-    let {world, context, tileset} = options;
-    let {x, y, width, height} = world.coords(this.x, this.y, this.width, this.height, PEngine.KIND_ENTITY);
-    if ((x + width >= 0 && x <= context.width) || (y + height >= 0 && y <= context.height)) {
-      tileset.draw(context, this.tile, x, y, width, height);
-    }
+    let {world, context, entityset} = options;
+    let parent = this.getParent();
+
+    parent.draw(options, this);
 
     this.runPostDraw(options);
   }
@@ -412,6 +552,7 @@ PEngine.Block = class Block extends PEngine.Drawable {
   }
 
   draw(options) {
+    // draws the block
     this.runPreDraw(options);
 
     let {world, context, tileset} = options;
@@ -432,6 +573,7 @@ PEngine.PolyBlock = class PolyBlock extends PEngine.Block {
   }
 
   draw(options) {
+    // attempts to draw the connected faces, otherwise draw the default tile
     const sides = ["top", "bottom", "left", "right"];
     const selectors = ["t", "b", "l", "r"];
 
