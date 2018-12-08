@@ -1,5 +1,10 @@
 let PEngine = window.PEngine = {};
 
+// constants
+PEngine.KIND_ENTITY = 0;
+PEngine.KIND_BLOCK = 1;
+PEngine.KIND_COMPONENT = 2;
+
 PEngine.Scene = class Scene {
   constructor(element) {
     if (typeof element == "string") {
@@ -253,6 +258,12 @@ PEngine.World = class World {
   } // ^ World.draw
 
   coords(x, y, width, height, kind) {
+    if (kind === PEngine.KIND_COMPONENT) {
+      return {
+        x: x * width,
+        y: y * width
+      };
+    }
     if (
       kind === PEngine.KIND_ENTITY && this.settings.entitiesUseBlockSize
       || kind === PEngine.KIND_BLOCK
@@ -287,9 +298,6 @@ PEngine.World = class World {
     }
   }
 } // ^ World
-
-PEngine.KIND_ENTITY = 0;
-PEngine.KIND_BLOCK = 1;
 
 PEngine.Tileset = class Tileset {
   constructor(settings = {}) {
@@ -507,6 +515,45 @@ PEngine.Entity = class Entity extends PEngine.Drawable {
   }
 }
 
+PEngine.MultiComponentEntity = class MultiComponentEntity extends PEngine.Entity {
+  constructor(width, height, name, tiles = {default: name}) {
+    super(width, height, name, tiles);
+    this.components = [];
+  }
+
+  addComponent(component, attributes = {}) {
+    this.components.push([component, Object.assign({tile: "default"}, attributes)]);
+    return this;
+  }
+
+  setAttributes(id, attributes) {
+    if (this.components[id]) {
+      this.components[id][1] = attributes;
+    }
+  }
+
+  getAttributes(id) {
+    if (this.components[id]) {
+      return this.components[id][1];
+    }
+  }
+
+  draw(options, instance) {
+    this.runPreDraw(options, instance);
+
+    let {world} = options;
+    let {x, y, width, height} = world.coords(instance.x, instance.y, this.width, this.height, PEngine.KIND_ENTITY);
+    this.components.forEach(([component, attributes]) => {
+      component.draw(options, instance, attributes, {
+        x, y, width, height,
+        kind: PEngine.KIND_ENTITY
+      });
+    });
+
+    this.runPostDraw(options, instance);
+  }
+}
+
 PEngine.EntityInstance = class EntityInstance extends PEngine.Drawable {
   constructor(x, y, parent, layer = 0) {
     super();
@@ -535,12 +582,46 @@ PEngine.EntityInstance = class EntityInstance extends PEngine.Drawable {
   draw(options) {
     this.runPreDraw(options);
 
-    let {world, context, entityset} = options;
     let parent = this.getParent();
-
     parent.draw(options, this);
 
     this.runPostDraw(options);
+  }
+}
+
+PEngine.Component = class Component extends PEngine.Drawable {
+  constructor(width, height, name, tiles = {default: name}) {
+    super();
+    this.width = width;
+    this.height = height;
+    this.name = name;
+    this.tiles = tiles;
+  }
+
+  getTile(options, parent, attributes, id) {
+    if (attributes.tile && this.tiles[attributes.tile]) {
+      return this.tiles[attributes.tile];
+    }
+
+    return this.tiles.default;
+  }
+
+  draw(options, parent, attributes, {x, y, width, height, id}) {
+    this.runPreDraw(options, parent, attributes, {x, y, width, height, id});
+
+    let {world, context, tileset} = options;
+    let dx = typeof attributes.dx == "function" ? attributes.dx(options) : attributes.dx;
+    let dy = typeof attributes.dy == "function" ? attributes.dy(options) : attributes.dy;
+    let coords = world.coords(dx, dy, width, height, PEngine.KIND_COMPONENT);
+    x += coords.x;
+    y += coords.y;
+    width *= this.width;
+    height *= this.height;
+
+    let tile = this.getTile(options, parent, attributes, id);
+    tileset.draw(context, tile, x, y, width, height);
+
+    this.runPostDraw(options, parent, attributes, {x, y, width, height, id});
   }
 }
 
